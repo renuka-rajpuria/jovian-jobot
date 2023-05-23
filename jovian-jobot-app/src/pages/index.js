@@ -1,20 +1,44 @@
 import { useState } from "react";
-import Head from "next/head";
 import ReactMarkdown from "react-markdown";
-import { createParser } from "eventsource-parser";
+import Head from "next/head";
+import TextareaAutosize from "react-textarea-autosize";
+import Navbar from "../components/Navbar";
+import { useUser } from "@supabase/auth-helpers-react";
+import { streamOpenAIResponse } from "@/utils/openai";
+
+const SYSTEM_MESSAGE =
+  "You are Jobot, a helpful and verstaile AI created by Jovian using state-of the art ML models and APIs.";
+
 export default function Home() {
-  const [apiKey, setApiKey] = useState("");
-  const [userMessage, setUserMessage] = useState("");
+  const user = useUser();
+
   const [messages, setMessages] = useState([
-    {
-      role: "system",
-      content:
-        "You are Jobot, a helpful AI developed by Jovian and powered by state-of-the-art machine learning models.",
-    },
+    { role: "system", content: SYSTEM_MESSAGE },
   ]);
 
-  const API_URL = "https://api.openai.com/v1/chat/completions";
+  const [userMessage, setUserMessage] = useState("");
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendRequest();
+    }
+  };
+
   const sendRequest = async () => {
+    if (!user) {
+      alert("Please log in to send a message");
+      return;
+    }
+
+    if (!userMessage) {
+      alert("Please enter a message before you hit send");
+      return;
+    }
+
+    const oldUserMessage = userMessage;
+    const oldMessages = messages;
+
     const updatedMessages = [
       ...messages,
       {
@@ -27,11 +51,10 @@ export default function Home() {
     setUserMessage("");
 
     try {
-      const response = await fetch(API_URL, {
+      const response = await fetch("/api/chat", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
           model: "gpt-3.5-turbo",
@@ -40,44 +63,23 @@ export default function Home() {
         }),
       });
 
-      const reader = response.body.getReader();
-
-      let newMessage = "";
-      const parser = createParser((event) => {
-        if (event.type === "event") {
-          const data = event.data;
-          if (data === "[DONE]") {
-            return;
-          }
-          const json = JSON.parse(event.data);
-          const content = json.choices[0].delta.content;
-
-          if (!content) {
-            return;
-          }
-
-          newMessage += content;
-
-          const updatedMessages2 = [
-            ...updatedMessages,
-            { role: "assistant", content: newMessage },
-          ];
-
-          setMessages(updatedMessages2);
-        } else {
-          return "";
-        }
-      });
-
-      // eslint-disable-next-line
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text = new TextDecoder().decode(value);
-        parser.feed(text);
+      if (response.status !== 200) {
+        throw new Error(`OpenAI API returned an error.`);
       }
+
+      streamOpenAIResponse(response, (newMessage) => {
+        console.log("newMessage:", newMessage);
+        const updatedMessages2 = [
+          ...updatedMessages,
+          { role: "assistant", content: newMessage },
+        ];
+        setMessages(updatedMessages2);
+      });
     } catch (error) {
       console.error("error");
+
+      setUserMessage(oldUserMessage);
+      setMessages(oldMessages);
       window.alert("Error:" + error.message);
     }
   };
@@ -85,65 +87,52 @@ export default function Home() {
   return (
     <>
       <Head>
-        <title>Jobot</title>
+        <title>Jobot - Your friendly neighborhood AI</title>
       </Head>
       <div className="flex flex-col h-screen">
-        {/* Navbar */}
-        <nav className="bg-white shadow w-full">
-          <div className="px-4 h-14 flex justify-between items-center">
-            <div className="text-xl font-bold">Jobot</div>
-            <div>
-              <input
-                type="password"
-                className="border rounded p-1"
-                placeholder="Enter API key.."
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-              />
-            </div>
-          </div>
-        </nav>
+        {/* Navigation Bar */}
+        <Navbar />
 
         {/* Message History */}
-        <div className="flex-1 overflow-y-scroll">
-          <div className="mx-auto w-full max-w-screen-md p-4 ">
+        <div className="flex-1 overflow-y-scroll ">
+          <div className="w-full max-w-screen-md mx-auto px-4">
             {messages
-              .filter((msg) => msg.role !== "system")
-              .map((msg, idx) => (
-                <div key={idx} className="mt-3">
+              .filter((message) => message.role !== "system")
+              .map((message, idx) => (
+                <div key={idx} className="my-3">
                   <div className="font-bold">
-                    {msg.role === "user" ? "You" : "Jobot"}
+                    {message.role === "user" ? "You" : "Jobot"}
                   </div>
                   <div className="text-lg prose">
-                    <ReactMarkdown>
-                    {msg.content}
-                    </ReactMarkdown>
-                    </div>
+                    <ReactMarkdown>{message.content}</ReactMarkdown>
+                  </div>
                 </div>
               ))}
           </div>
         </div>
 
-        {/* Message Input */}
-        <div className="mx-auto w-full max-w-screen-md px-4 pt-0 pb-2 flex">
-          <textarea
-            className="border rounded-md text-lg p-2 flex-1"
-            rows={1}
-            placeholder="Ask me anything..."
-            value={userMessage}
-            onChange={(e) => setUserMessage(e.target.value)}
-          />
-          <button
-            onClick={sendRequest}
-            className="border rounded-md bg-blue-500 hover:bg-blue-600 text-white px-4 ml-2"
-          >
-            Send
-          </button>
+        {/* Message Input Box */}
+        <div>
+          <div className="w-full max-w-screen-md mx-auto flex px-4 pb-4 items-start">
+            <TextareaAutosize
+              value={userMessage}
+              autoFocus
+              maxRows={10}
+              onKeyDown={handleKeyDown}
+              placeholder="Ask me anything.."
+              onChange={(e) => setUserMessage(e.target.value)}
+              className="border text-lg rounded-md p-2 flex-1 resize-none"
+              rows={1}
+            />
+            <button
+              onClick={sendRequest}
+              className="bg-blue-500 hover:bg-blue-600 border rounded-md text-white text-lg w-20 p-2 ml-2"
+            >
+              Send
+            </button>
+          </div>
         </div>
       </div>
     </>
   );
 }
-
-
-
